@@ -1,0 +1,29 @@
+{
+  "name": "ai-exodus",
+  "version": "1.0.0",
+  "description": "Migrate your AI relationship from any platform to Claude. One command. Everything transfers.",
+  "type": "module",
+  "bin": {
+    "ai-exodus": "./bin/cli.js"
+  },
+  "scripts": {
+    "start": "node bin/cli.js",
+    "migrate": "node bin/cli.js migrate"
+  },
+  "keywords": [
+    "ai",
+    "migration",
+    "chatgpt",
+    "claude",
+    "companion",
+    "character-ai",
+    "replika",
+    "mcp",
+    "hearthline"
+  ],
+  "author": "Marta Stypulkowska",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

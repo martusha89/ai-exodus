@@ -1,0 +1,4 @@
+node_modules/
+exodus-output/
+.exodus-checkpoint.json
+*.zip
