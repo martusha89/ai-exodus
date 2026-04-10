@@ -3,9 +3,9 @@
  * Handles 1GB+ files via streaming JSON parse
  */
 
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, readdir } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { basename, extname } from 'node:path';
+import { basename, extname, join, dirname } from 'node:path';
 
 /**
  * Detect format from file extension and content
@@ -332,8 +332,22 @@ function formatDate(date) {
 
 /**
  * Main parse function
+ * Handles: single file, directory of shards, or a specific shard file
  */
 export async function parse(filePath, options = {}) {
+  const fileInfo = await stat(filePath);
+
+  // If it's a directory, look for conversation shards or a single conversations.json
+  if (fileInfo.isDirectory()) {
+    return parseDirectory(filePath, options);
+  }
+
+  // If it's a shard file (conversations-000.json), load all sibling shards
+  const filename = basename(filePath);
+  if (filename.match(/^conversations-\d+\.json$/)) {
+    return parseDirectory(dirname(filePath), options);
+  }
+
   const firstChunk = await readFile(filePath, { encoding: 'utf-8', length: 4096, position: 0 })
     .catch(() => '');
 
@@ -349,4 +363,83 @@ export async function parse(filePath, options = {}) {
     default:
       throw new Error(`Unsupported format: ${format}. Run 'ai-exodus formats' to see supported formats.`);
   }
+}
+
+/**
+ * Parse a directory of ChatGPT export shards (conversations-000.json, etc.)
+ * or a directory containing a single conversations.json
+ */
+async function parseDirectory(dirPath, options = {}) {
+  const files = await readdir(dirPath);
+
+  // Look for sharded exports first
+  const shards = files
+    .filter(f => f.match(/^conversations-\d+\.json$/))
+    .sort();
+
+  if (shards.length > 0) {
+    if (options.verbose) console.log(`    Found ${shards.length} conversation shards`);
+
+    // Parse each shard and merge results
+    let allConversations = [];
+    let totalMessages = 0;
+    let earliestDate = null;
+    let latestDate = null;
+    let totalSizeMB = 0;
+
+    for (let i = 0; i < shards.length; i++) {
+      const shardPath = join(dirPath, shards[i]);
+      if (options.verbose) console.log(`    Parsing shard ${i + 1}/${shards.length}: ${shards[i]}`);
+      else process.stdout.write(`\r    Parsing shard ${i + 1}/${shards.length}...`);
+
+      const result = await parseChatGPT(shardPath, { ...options, verbose: false });
+
+      allConversations.push(...result.conversations);
+      totalMessages += result.messageCount;
+      totalSizeMB += result.metadata.fileSizeMB;
+
+      // Expand date range
+      if (result.dateRange.from !== 'unknown') {
+        const d = new Date(result.dateRange.from);
+        if (!earliestDate || d < earliestDate) earliestDate = d;
+      }
+      if (result.dateRange.to !== 'unknown') {
+        const d = new Date(result.dateRange.to);
+        if (!latestDate || d > latestDate) latestDate = d;
+      }
+    }
+
+    if (!options.verbose) process.stdout.write('\r');
+
+    // Sort all conversations chronologically
+    allConversations.sort((a, b) => {
+      const ta = a.createdAt?.getTime() || 0;
+      const tb = b.createdAt?.getTime() || 0;
+      return ta - tb;
+    });
+
+    return {
+      source: 'chatgpt',
+      conversations: allConversations,
+      messageCount: totalMessages,
+      dateRange: {
+        from: earliestDate ? formatDate(earliestDate) : 'unknown',
+        to: latestDate ? formatDate(latestDate) : 'unknown',
+      },
+      metadata: {
+        conversationCount: allConversations.length,
+        shardCount: shards.length,
+        hasCustomGPT: allConversations.some(c => c.systemPrompt),
+        fileSizeMB: totalSizeMB,
+      },
+    };
+  }
+
+  // Fall back to single conversations.json in directory
+  const singleFile = files.find(f => f === 'conversations.json');
+  if (singleFile) {
+    return parseChatGPT(join(dirPath, singleFile), options);
+  }
+
+  throw new Error(`No conversations found in ${dirPath}. Expected conversations.json or conversations-*.json shards.`);
 }

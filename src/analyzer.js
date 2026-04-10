@@ -33,7 +33,12 @@ const PASS_NAMES = [
  * Run the 5-pass analysis pipeline
  */
 export async function analyze(parsed, options) {
-  const { model, aiName, userName, includeNsfw, verbose, outputDir, fast } = options;
+  const { model, aiName, userName, includeNsfw, verbose, outputDir, fast, selectedPasses } = options;
+  const runPass1 = !selectedPasses || selectedPasses.includes(1);
+  const runPass2 = !selectedPasses || selectedPasses.includes(2);
+  const runPass3 = !selectedPasses || selectedPasses.includes(3);
+  const runPass4 = !selectedPasses || selectedPasses.includes(4);
+  const runPass5 = !selectedPasses || selectedPasses.includes(5);
   const chunks = chunkConversations(parsed.conversations);
 
   if (verbose) console.log(`    Split into ${chunks.length} chunk(s) for processing`);
@@ -199,65 +204,79 @@ export async function analyze(parsed, options) {
   }
 
   // ═══════════════════════════════════════════
-  // PASS 1: Structure & Index
+  // PASS 1: Structure & Index (always runs — dependency for others)
   // ═══════════════════════════════════════════
-  // Pass 1: ALL chunks — need full picture for indexing (haiku in fast mode)
-  const indexResults = await runPass(1, PASS_NAMES[0], () => PASS_1_INDEX(aiName, userName),
-    { useHaiku: fast });
+  let indexData = {};
+  if (runPass1) {
+    const indexResults = await runPass(1, PASS_NAMES[0], () => PASS_1_INDEX(aiName, userName),
+      { useHaiku: fast });
 
-  const indexData = await getOrMerge('index', indexResults, async (r) => {
-    return mergeIndexResults(r, aiName, userName);
-  });
-  console.log(`          AI: ${indexData.aiName} | User: ${indexData.userName}`);
-  console.log(`          Top topics: ${indexData.topTopics?.slice(0, 5).join(', ')}`);
+    indexData = await getOrMerge('index', indexResults, async (r) => {
+      return mergeIndexResults(r, aiName, userName);
+    });
+    console.log(`          AI: ${indexData.aiName} | User: ${indexData.userName}`);
+    console.log(`          Top topics: ${indexData.topTopics?.slice(0, 5).join(', ')}`);
+  }
 
   // ═══════════════════════════════════════════
   // PASS 2: Personality Extraction
   // ═══════════════════════════════════════════
-  // Pass 2: SAMPLED — personality is consistent, 15 chunks is enough
-  const personalityResults = await runPass(2, PASS_NAMES[1],
-    () => PASS_2_PERSONALITY(indexData.aiName, indexData.userName, indexData),
-    { sampleOnly: true });
+  let personalityData = {};
+  if (runPass2) {
+    const personalityResults = await runPass(2, PASS_NAMES[1],
+      () => PASS_2_PERSONALITY(indexData.aiName, indexData.userName, indexData),
+      { sampleOnly: true });
 
-  const personalityData = await getOrMerge('personality', personalityResults, async (r) => {
-    spinner.start('Merging personality data...');
-    const result = r.length === 1 ? r[0] : await synthesizeResults(model, 'personality', r, indexData);
-    spinner.stop('Personality merged');
-    return result;
-  });
-  console.log(`          Voice: ${personalityData?.voice?.formality || 'detected'}, humor: ${personalityData?.voice?.humor || 'detected'}`);
+    personalityData = await getOrMerge('personality', personalityResults, async (r) => {
+      spinner.start('Merging personality data...');
+      const result = r.length === 1 ? r[0] : await synthesizeResults(model, 'personality', r, indexData);
+      spinner.stop('Personality merged');
+      return result;
+    });
+    console.log(`          Voice: ${personalityData?.voice?.formality || 'detected'}, humor: ${personalityData?.voice?.humor || 'detected'}`);
+  } else {
+    console.log(`    [2/5] Personality extraction... (skipped)`);
+  }
 
   // ═══════════════════════════════════════════
   // PASS 3: Memory Extraction
   // ═══════════════════════════════════════════
-  // Pass 3: ALL chunks — facts hide everywhere
-  const memoryResults = await runPass(3, PASS_NAMES[2],
-    () => PASS_3_MEMORY(indexData.aiName, indexData.userName, indexData));
+  let memoryData = {};
+  let factCount = 0;
+  if (runPass3) {
+    const memoryResults = await runPass(3, PASS_NAMES[2],
+      () => PASS_3_MEMORY(indexData.aiName, indexData.userName, indexData));
 
-  const memoryData = await getOrMerge('memory', memoryResults, async (r) => {
-    spinner.start('Merging memories...');
-    const result = r.length === 1 ? r[0] : await synthesizeResults(model, 'memory', r, indexData);
-    spinner.stop('Memories merged');
-    return result;
-  });
-  const factCount = countFacts(memoryData);
-  console.log(`          Extracted ~${factCount} facts about ${indexData.userName}`);
+    memoryData = await getOrMerge('memory', memoryResults, async (r) => {
+      spinner.start('Merging memories...');
+      const result = r.length === 1 ? r[0] : await synthesizeResults(model, 'memory', r, indexData);
+      spinner.stop('Memories merged');
+      return result;
+    });
+    factCount = countFacts(memoryData);
+    console.log(`          Extracted ~${factCount} facts about ${indexData.userName}`);
+  } else {
+    console.log(`    [3/5] Memory extraction... (skipped)`);
+  }
 
   // ═══════════════════════════════════════════
   // PASS 4: Skills Detection
   // ═══════════════════════════════════════════
+  let skillsData = {};
+  let rawSkillsData = {};
+  if (runPass4) {
   // Pass 4: SAMPLED — skills repeat, 15 chunks is enough (haiku in fast mode)
   const skillsResults = await runPass(4, PASS_NAMES[3],
     () => PASS_4_SKILLS(indexData.aiName, indexData.userName, indexData),
     { sampleOnly: true, useHaiku: fast });
 
   // First: local JS merge to collect all raw skills
-  const rawSkillsData = skillsResults.length === 1
+  rawSkillsData = skillsResults.length === 1
     ? skillsResults[0]
     : await synthesizeResults(model, 'skills', skillsResults, indexData);
 
   // Then: one Claude call to consolidate 370 duplicates into ~25 clean skills
-  const skillsData = await getOrMerge('skills', null, async () => {
+  skillsData = await getOrMerge('skills', null, async () => {
     const rawCount = rawSkillsData?.skills?.length || 0;
     if (rawCount <= 30) return rawSkillsData; // already clean enough
 
@@ -275,6 +294,9 @@ Rules:
 - Combine duplicates into ONE skill with the best name, description, and examples
 - Keep 15-30 unique skills maximum
 - Preserve the category, frequency (pick the highest), and approach fields
+- MERGE trigger data: combine all phrase/temporal/emotional/contextual triggers from duplicate skills, deduplicate
+- Each merged skill MUST keep its "triggers" object and "activationRule" field
+- The "activationRule" should be refined to one clear IF-THEN sentence after merging
 - Pick the most specific and useful description for each
 - primaryRole should be ONE clear sentence
 - secondaryRoles should be 3-5 items max
@@ -287,11 +309,16 @@ Rules:
   });
   const skillCount = skillsData?.skills?.length || 0;
   console.log(`          ${rawSkillsData?.skills?.length || 0} raw → ${skillCount} consolidated skills`);
+  } else {
+    console.log(`    [4/5] Skills detection... (skipped)`);
+  }
 
   // ═══════════════════════════════════════════
   // PASS 5: Relationship Narrative
   // ═══════════════════════════════════════════
-  const relationshipNarrative = await getOrMerge('relationship', null, async () => {
+  let relationshipNarrative = '';
+  if (runPass5) {
+  relationshipNarrative = await getOrMerge('relationship', null, async () => {
     console.log(`    [5/5] ${PASS_NAMES[4]}...`);
     const representativeSample = selectRepresentativeSample(parsed.conversations, chunks);
     let sampleText = formatChunk(representativeSample);
@@ -318,11 +345,19 @@ Rules:
     spinner.stop('Relationship narrative complete');
     return result;
   });
+  } else {
+    console.log(`    [5/5] Relationship narrative... (skipped)`);
+  }
 
   // ═══════════════════════════════════════════
-  // SYNTHESIS: Generate final outputs
+  // SYNTHESIS: Generate final outputs (only if relevant passes ran)
   // ═══════════════════════════════════════════
-  const persona = await getOrMerge('persona', null, async () => {
+  let persona = '';
+  let preferences = '';
+  let customInstructions = '';
+
+  if (runPass2 || runPass4) {
+  persona = await getOrMerge('persona', null, async () => {
     spinner.start('Generating persona definition...');
     const result = await callClaude({
       model,
@@ -332,8 +367,10 @@ Rules:
     spinner.stop('Persona generated');
     return result;
   });
+  }
 
-  const preferences = await getOrMerge('preferences', null, async () => {
+  if (runPass3) {
+  preferences = await getOrMerge('preferences', null, async () => {
     spinner.start('Generating preferences...');
     const result = await callClaude({
       model,
@@ -343,8 +380,10 @@ Rules:
     spinner.stop('Preferences generated');
     return result;
   });
+  }
 
-  const customInstructions = await getOrMerge('customInstructions', null, async () => {
+  if (runPass2 && runPass3 && runPass4) {
+  customInstructions = await getOrMerge('customInstructions', null, async () => {
     spinner.start('Generating custom instructions (short, for Claude.ai)...');
     const result = await callClaude({
       model,
@@ -354,6 +393,7 @@ Rules:
     spinner.stop('Custom instructions generated');
     return result;
   });
+  }
 
   // Clear checkpoint — migration complete
   await checkpoint.clear();
@@ -363,8 +403,8 @@ Rules:
     personality: personalityData,
     memory: memoryData,
     skills: skillsData,
-    relationship: relationshipNarrative,
-    persona,
+    relationship: relationshipNarrative || '',
+    persona: persona || '',
     preferences,
     customInstructions,
     source: parsed.source,

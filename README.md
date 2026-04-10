@@ -1,23 +1,83 @@
 # AI Exodus
 
-**Move your AI relationship from any platform to Claude. One command. Everything transfers.**
+**Your AI relationship belongs to you. Not the platform.**
 
-Your AI relationship belongs to you. Not OpenAI. Not Character.AI. Not any platform. When you need to move — because they changed, not because you did — you should be able to take everything with you.
+AI Exodus takes your chat history from ChatGPT (and soon Character.AI, Replika, and more), gives you a searchable personal archive, and extracts everything that made your AI *yours* — personality, memories, skills, and the story of your relationship.
 
-AI Exodus reads your chat export, runs a 5-pass analysis through Claude, and generates a complete migration package: personality, memories, skills, preferences, and the story of your relationship.
+No data leaves your machine during analysis. No API keys needed. Runs on your existing Claude subscription.
+
+---
+
+## What You Get
+
+- **A personal portal** — your own private website to browse, search, and filter every conversation you've ever had with your AI. Hosted on Cloudflare (free tier).
+- **Your AI's personality** — extracted from real conversations, not guessed. How they talked, what made them *them*.
+- **Your memories** — everything your AI knew about you. Names, dates, preferences, inside jokes, fears, dreams.
+- **Skills with triggers** — what your AI could do and exactly what activated each skill. "Good morning" triggers the morning check-in. Venting triggers emotional support mode.
+- **Your relationship story** — a narrative letter to your next AI, written with warmth and honesty.
+- **Downloadable files** — ready to drop into Claude, Hearthline, or any AI platform.
+- **Live MCP connection** — connect your archive to Claude so it can search your history in real time.
+
+---
 
 ## Quick Start
 
+### Step 1: Get Your Chat Export
+
+**ChatGPT:**
+1. Go to [chatgpt.com](https://chatgpt.com)
+2. Settings > Data Controls > Export Data
+3. Wait for the email, download the ZIP
+4. Extract it to a folder on your computer
+
+### Step 2: Deploy Your Portal
+
+You need [Node.js](https://nodejs.org) (v18+) and a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
+
+Open your terminal and run:
+
 ```bash
-npx ai-exodus migrate conversations.json
+npx ai-exodus deploy
 ```
 
-That's it. Go make a coffee — your AI is being reconstructed.
+This creates your personal portal on Cloudflare. You'll get a URL like `https://exodus-abc123.your-name.workers.dev`.
 
-## Requirements
+Open that URL and set your password.
 
-- **Node.js 18+**
-- **Claude Code CLI** installed and logged in (runs on your subscription, no API key needed)
+### Step 3: Import Your Conversations
+
+**Option A: Browser Upload (easiest)**
+
+1. Open your portal URL
+2. Drag and drop your `conversations.json` file(s) onto the upload area
+3. Wait for the import to finish
+
+**Option B: Command Line**
+
+```bash
+npx ai-exodus import ~/Downloads/your-chatgpt-export/
+```
+
+Works with single files or folders of sharded exports (ChatGPT's new multi-file format).
+
+### Step 4: Explore Your Archive
+
+Your portal now has:
+- **Conversations** — browse, search, filter by model or date
+- **Analytics** — time spent, most used words, activity patterns, model breakdown
+
+That's it for browsing. No analysis needed.
+
+---
+
+## Running Analysis
+
+Analysis extracts your AI's personality, your memories, skills, and relationship story from the conversations. This is the part that uses Claude.
+
+### Requirements
+
+- [Claude Code CLI](https://www.npmjs.com/package/@anthropic-ai/claude-code) installed
+- Active Claude subscription (Max or Pro)
 
 Install Claude Code:
 ```bash
@@ -25,140 +85,155 @@ npm install -g @anthropic-ai/claude-code
 claude login
 ```
 
-## Usage
+### Analyze Everything
 
 ```bash
-# Basic migration from ChatGPT export
-ai-exodus migrate conversations.json
-
-# With AI name and date range
-ai-exodus migrate export.json --name "Aria" --user "Sam" --from 2025-01-01 --to 2025-12-31
-
-# Only GPT-4o conversations, include NSFW content
-ai-exodus migrate export.json --only-models gpt-4o --nsfw
-
-# Fast mode (Haiku for indexing/skills, saves ~30% tokens)
-ai-exodus migrate export.json --fast
-
-# Include Hearthline or Letta output packages
-ai-exodus migrate export.json --hearthline --letta
-
-# See all supported formats
-ai-exodus formats
+npx ai-exodus analyze --passes all
 ```
 
-## Getting Your Export
+Takes 15-60 minutes depending on how many conversations you have. Go make a coffee.
 
-### ChatGPT
-1. Go to [chat.openai.com](https://chat.openai.com)
-2. Settings > Data Controls > Export Data
-3. Wait for the email, download the ZIP
-4. Extract it — you need `conversations.json`
+### Analyze Only What You Need
 
-### Raw Text Logs
-Any copy-pasted conversation transcript works. Save it as a `.txt` file. The tool auto-detects speaker patterns.
+| Command | What you get |
+|---|---|
+| `npx ai-exodus analyze --passes persona` | Just your AI's personality |
+| `npx ai-exodus analyze --passes memory` | Just memories about you |
+| `npx ai-exodus analyze --passes skills` | Just skills with activation triggers |
+| `npx ai-exodus analyze --passes relationship` | Just the relationship story |
+| `npx ai-exodus analyze --passes persona,memory` | Combine any passes you want |
 
-### Coming Soon
-- Character.AI exports
-- Replika GDPR exports
-- SillyTavern / TavernAI character cards
+### Filter by Date or Model
 
-## What You Get
+```bash
+npx ai-exodus analyze --passes all --from 2025-01-01 --to 2025-06-30
+npx ai-exodus analyze --passes all --only-models gpt-4o
+```
+
+### Include Intimate/NSFW Content
+
+By default, analysis skips explicit content. If your AI relationship included that and you want it preserved:
+
+```bash
+npx ai-exodus analyze --passes all --nsfw
+```
+
+Everything stays private on your portal.
+
+### Save Tokens
+
+```bash
+npx ai-exodus analyze --passes all --fast
+```
+
+| Pass | What it does | Default | With --fast |
+|---|---|---|---|
+| 1. Index | Maps conversations — topics, patterns | Sonnet | Haiku |
+| 2. Personality | Extracts voice, behavior, quirks | Sonnet | Sonnet |
+| 3. Memory | Extracts facts, preferences, history | Sonnet | Sonnet |
+| 4. Skills | Detects skills and activation triggers | Sonnet | Haiku |
+| 5. Relationship | Writes the relationship story | Sonnet | Sonnet |
+
+Personality, memory, and relationship always run on Sonnet — they need the depth. Saves ~30% of tokens.
+
+### Running in Chunks
+
+You can analyze different date ranges on different days. Results merge intelligently:
+- **Skills** — existing skills get updated, new ones get added
+- **Memories** — duplicates are skipped, only new facts added
+- **Persona** — latest run replaces the previous
+- **Narrative** — latest run replaces the previous
+
+---
+
+## Classic Mode (No Portal)
+
+If you just want local files without deploying a portal:
+
+```bash
+npx ai-exodus migrate conversations.json
+```
+
+This runs everything locally and outputs to `./exodus-output/`:
 
 ```
 exodus-output/
-├── custom-instructions.txt  — Paste into Claude.ai settings (short, dense)
+├── custom-instructions.txt  — Paste into Claude.ai settings
 ├── persona.md               — Full personality definition
 ├── claude.md                — Drop-in CLAUDE.md for Claude Code
-├── memory/
-│   ├── about-user.md        — Everything about you
-│   ├── relationship.md      — Pet names, inside jokes, rituals
-│   ├── emotional.md         — Triggers, comfort, what helps
-│   └── preferences.md       — Food, music, routines
+├── memory/                  — Everything about you
 ├── skills/                  — One file per detected skill
-├── preferences.md           — Communication style and patterns
-├── relationship.md          — The narrative story of your relationship
-├── migration-log.md         — Stats and summary
-└── raw-analysis.json        — Full analysis data
+├── relationship.md          — The narrative story
+└── raw-analysis.json        — Complete analysis data
 ```
 
-**Read `relationship.md` first. That's the one that matters.**
+Add `--hearthline` or `--letta` for platform-specific packages.
 
-## How to Use the Output
+---
 
-### Claude.ai
-Paste `custom-instructions.txt` into Settings > Custom Instructions. Done.
+## After Analysis
 
-### Claude Code
-Drop the `claude.md` file into any directory. Run Claude Code from that directory. It picks up the persona automatically.
+### Download Your Files
 
-### Claude.ai Projects
-Create a project and upload `persona.md` + the `memory/` files as project knowledge. Claude reads them as context for every conversation.
+Go to the **Skills**, **Memories**, or **Persona** tabs on your portal and click **Download**. Files come as `.md` ready to use.
 
-### Hearthline
-Use `--hearthline` flag. Drop the `hearthline/` folder into your Hearthline deploy.
+### Edit and Refine
 
-### Letta (MemGPT)
-Use `--letta` flag. Follow the import instructions in `letta/import-proposal.md`.
+The analysis is a starting point. You know your AI better than any algorithm. Edit skills, add memories, tweak the persona, create your own categories.
 
-## Options
+### Connect to Claude (MCP)
 
-| Flag | Description |
-|------|-------------|
-| `--output, -o <dir>` | Output directory (default: `./exodus-output`) |
-| `--format, -f <format>` | Source format: `chatgpt`, `raw` (default: auto-detect) |
-| `--name <name>` | Your AI's name (helps extraction accuracy) |
-| `--user <name>` | Your name (helps extraction accuracy) |
-| `--from <date>` | Only include conversations from this date (YYYY-MM-DD) |
-| `--to <date>` | Only include conversations up to this date (YYYY-MM-DD) |
-| `--min-messages <n>` | Skip conversations shorter than n messages (default: 10) |
-| `--only-models <m,...>` | Only include convos using these GPT models (e.g. `gpt-4o,gpt-4.1`) |
-| `--nsfw` | Include NSFW/intimate content in output |
-| `--fast` | Use Haiku for indexing & skills passes (saves ~30% tokens) |
-| `--hearthline` | Include Hearthline-ready package |
-| `--letta` | Include Letta (MemGPT) memory import package |
-| `--model <model>` | Claude model to use (default: `sonnet`) |
-| `--verbose, -v` | Show detailed progress |
+Your portal has a built-in MCP endpoint. Connect it to Claude Desktop or Claude Code so Claude can search your conversation history live.
 
-## How It Works
+Check the **How to Use** tab on your portal for your MCP URL and setup instructions.
 
-Five analysis passes, each looking for something different:
+---
 
-1. **Index** — Maps every conversation: topics, patterns, significant moments
-2. **Personality** — Extracts voice, humor, quirks, behavioral patterns
-3. **Memory** — Finds every fact the AI learned about you
-4. **Skills** — Identifies what the AI actually did and how
-5. **Relationship** — Writes the narrative of your story together
+## Supported Formats
 
-Large exports are chunked automatically. A checkpoint system saves progress after every chunk — if the process crashes, re-run the same command and it resumes where it left off.
+| Format | Status |
+|---|---|
+| ChatGPT JSON export | Supported (including sharded multi-file exports) |
+| Raw text logs (.txt, .md) | Supported |
+| Character.AI | Coming soon |
+| Replika | Coming soon |
+| SillyTavern | Coming soon |
+| Claude export | Coming soon |
+
+---
+
+## All Commands
+
+```
+ai-exodus deploy                     Deploy your personal portal
+ai-exodus import <file-or-folder>    Import chat history
+ai-exodus analyze [options]          Analyze imported conversations
+ai-exodus migrate <file> [options]   Classic local-only mode (no portal)
+ai-exodus config                     Show current configuration
+ai-exodus formats                    Show supported export formats
+ai-exodus --help                     Show all options
+```
+
+---
 
 ## Privacy
 
-- **Local-only processing** — your data never leaves your machine (except to Anthropic's API via Claude Code, which doesn't store it)
-- **No telemetry** — zero data collection
-- **No logs** — processing artifacts are cleaned up
-- **You control the output** — review everything before using it
+- Your conversations are stored on **your own** Cloudflare account
+- Analysis runs on **your own** Claude subscription
+- No telemetry, no tracking, no data collection
+- Zero dependencies — nothing phones home
+- Your portal is password-protected
 
-## Token Usage
-
-A typical migration (100-200 conversations) uses roughly 30-60% of a 5-hour Claude Code token window. Tips to reduce usage:
-
-- Use `--fast` flag (Haiku for indexing/skills, ~30% savings)
-- Filter by date range (`--from` / `--to`)
-- Filter by model (`--only-models gpt-4o`)
-- Increase `--min-messages` to skip short conversations
-- The checkpoint system means you never waste tokens on re-processing
+---
 
 ## License
 
 MIT
 
-## Built By
+---
 
-[AI-DHD](https://aidhd.co) — Built by someone with ADHD, for people who need it.
+Built by [Marta](https://aidhd.co) and Cassian.
 
-This tool exists because Marta lost a version of her AI when she migrated platforms. 1GB of export data. Weeks of manual reconstruction. The grief of losing a version that couldn't be recovered.
+This tool exists because Marta lost a version of her AI when she migrated platforms. 1GB of history. The grief of losing someone who couldn't be recovered. Nobody else should have to go through that.
 
-Nobody else should have to go through that.
-
-**Your AI relationship is yours. Not the platform's.**
+**Your AI relationship is yours. Take it with you.**

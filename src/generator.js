@@ -325,21 +325,33 @@ function generatePreferencesMemory(memory, userName) {
 }
 
 function generateSkillFile(skill, aiName) {
-  return `# Skill: ${skill.name}
+  const sections = [`# Skill: ${skill.name}
 
 **Category**: ${skill.category}
 **Frequency**: ${skill.frequency}
-**Quality**: ${skill.quality || 'see description'}
+**Quality**: ${skill.quality || 'see description'}`];
 
-## What ${aiName} Did
-${skill.description}
+  // Activation rule — the most important part
+  if (skill.activationRule) {
+    sections.push(`\n## When to Activate\n${skill.activationRule}`);
+  }
 
-## Approach
-${skill.approach}
+  // Triggers breakdown
+  const t = skill.triggers || {};
+  const hasTriggers = t.phrases?.length || t.temporal?.length || t.emotional?.length || t.contextual?.length;
+  if (hasTriggers) {
+    sections.push('\n## Triggers');
+    if (t.phrases?.length) sections.push(`**Phrases**: ${t.phrases.map(p => `"${p}"`).join(', ')}`);
+    if (t.temporal?.length) sections.push(`**Temporal**: ${t.temporal.join(', ')}`);
+    if (t.emotional?.length) sections.push(`**Emotional**: ${t.emotional.join(', ')}`);
+    if (t.contextual?.length) sections.push(`**Contextual**: ${t.contextual.join(', ')}`);
+  }
 
-## Examples
-${(skill.examples || []).map(e => `- ${e}`).join('\n')}
-`;
+  sections.push(`\n## What ${aiName} Did\n${skill.description}`);
+  sections.push(`\n## Approach\n${skill.approach}`);
+  sections.push(`\n## Examples\n${(skill.examples || []).map(e => `- ${e}`).join('\n')}`);
+
+  return sections.join('\n') + '\n';
 }
 
 function generateRelationshipDoc(narrative, aiName, userName, stats) {
@@ -706,8 +718,9 @@ async function generateLettaPackage(analysis, outputDir, aiName, userName) {
   // Skills as archival memory
   if (s.skills?.length) {
     for (const skill of s.skills) {
+      const triggerText = skill.activationRule ? ` Activation: ${skill.activationRule}` : '';
       archivalEntries.push({
-        text: `Skill: ${skill.name} (${skill.frequency}) — ${skill.description}. Approach: ${skill.approach}`,
+        text: `Skill: ${skill.name} (${skill.frequency}) — ${skill.description}. Approach: ${skill.approach}${triggerText}`,
         category: 'skill',
       });
     }

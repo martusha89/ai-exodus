@@ -8,31 +8,66 @@ import { parse } from '../src/parser.js';
 import { analyze } from '../src/analyzer.js';
 import { generate } from '../src/generator.js';
 import { checkCLI } from '../src/claude.js';
+import { deploy } from '../src/deploy.js';
+import { importExport } from '../src/import.js';
+import { loadConfig } from '../src/config.js';
 
-const VERSION = '1.0.0';
+const VERSION = '2.0.0';
 
 const HELP = `
   ai-exodus v${VERSION}
   Migrate your AI relationship from any platform to Claude.
 
   Usage:
-    ai-exodus migrate <export-file> [options]
+    ai-exodus deploy                           Deploy your personal portal
+    ai-exodus import <export-file> [options]   Import chat history to portal
+    ai-exodus analyze [options]                Analyze imported data (from portal)
+    ai-exodus migrate <export-file> [options]  Classic: parse + analyze + generate locally
     ai-exodus formats                          Show supported export formats
+    ai-exodus config                           Show current configuration
     ai-exodus --help                           Show this help
 
-  Options:
+  Deploy options:
+    --verbose, -v           Show detailed output
+
+  Import options:
+    --format, -f <format>   Source format: chatgpt, raw (default: auto-detect)
+    --from <date>           Only conversations from this date (YYYY-MM-DD)
+    --to <date>             Only conversations up to this date (YYYY-MM-DD)
+    --min-messages <n>      Skip conversations shorter than n messages (default: 10)
+    --only-models <m,...>   Only include convos using these GPT models
+    --portal-url <url>      Portal URL (default: from config)
+    --password <pw>         Portal password
+    --verbose, -v           Show detailed progress
+
+  Analyze options:
+    --passes <list>         Which passes to run: index,persona,memory,skills,relationship,all (default: all)
+    --model <model>         Claude model (default: sonnet)
+    --fast                  Use Haiku for indexing & skills passes
+    --from <date>           Only analyze conversations from this date
+    --to <date>             Only analyze conversations up to this date
+    --only-models <m,...>   Only analyze convos using these models
+    --name <name>           Your AI's name
+    --user <name>           Your name
+    --nsfw                  Include NSFW content
+    --portal-url <url>      Portal URL (default: from config)
+    --password <pw>         Portal password
+    --output, -o <dir>      Also write local files (default: portal only)
+    --verbose, -v           Show detailed progress
+
+  Migrate options (classic local mode):
     --output, -o <dir>      Output directory (default: ./exodus-output)
     --format, -f <format>   Source format: chatgpt, raw (default: auto-detect)
     --hearthline            Include Hearthline-ready package
     --letta                 Include Letta (MemGPT) memory import package
     --nsfw                  Include NSFW/intimate content in output
-    --name <name>           Your AI's name (helps extraction accuracy)
-    --user <name>           Your name (helps extraction accuracy)
-    --from <date>           Only include conversations from this date (YYYY-MM-DD)
-    --to <date>             Only include conversations up to this date (YYYY-MM-DD)
+    --name <name>           Your AI's name
+    --user <name>           Your name
+    --from <date>           Only conversations from this date (YYYY-MM-DD)
+    --to <date>             Only conversations up to this date (YYYY-MM-DD)
     --min-messages <n>      Skip conversations shorter than n messages (default: 10)
-    --only-models <m,...>   Only include convos using these GPT models (e.g. gpt-4o,gpt-4.1)
-    --fast                  Use Haiku for indexing & skills passes (saves ~30% tokens)
+    --only-models <m,...>   Only include convos using these GPT models
+    --fast                  Use Haiku for indexing & skills (saves ~30% tokens)
     --model <model>         Claude model to use (default: sonnet)
     --verbose, -v           Show detailed progress
     --help, -h              Show this help
@@ -43,11 +78,11 @@ const HELP = `
     Install: npm install -g @anthropic-ai/claude-code
 
   Examples:
-    ai-exodus migrate conversations.json
+    ai-exodus deploy
+    ai-exodus import conversations.json
+    ai-exodus analyze --passes persona,memory --model sonnet --from 2024-06
     ai-exodus migrate export.json --name "Cass" --user "Marta" --hearthline
-    ai-exodus migrate chatlog.txt --format raw --output ./my-ai
     ai-exodus migrate export.json --from 2025-06-01 --to 2025-12-31
-    ai-exodus migrate export.json --letta --min-messages 20
 `;
 
 const FORMATS = `
@@ -84,6 +119,331 @@ async function main() {
 
   if (command === 'formats') {
     console.log(FORMATS);
+    process.exit(0);
+  }
+
+  // ── Deploy ──
+  if (command === 'deploy') {
+    const { values: deployVals } = parseArgs({
+      args: args.slice(1),
+      options: { verbose: { type: 'boolean', short: 'v', default: false } },
+      allowPositionals: true,
+    });
+    await deploy({ verbose: deployVals.verbose });
+    process.exit(0);
+  }
+
+  // ── Import ──
+  if (command === 'import') {
+    const { values: importVals, positionals: importPos } = parseArgs({
+      args: args.slice(1),
+      options: {
+        format:         { type: 'string', short: 'f' },
+        from:           { type: 'string' },
+        to:             { type: 'string' },
+        'min-messages': { type: 'string', default: '10' },
+        'only-models':  { type: 'string' },
+        'portal-url':   { type: 'string' },
+        password:       { type: 'string' },
+        verbose:        { type: 'boolean', short: 'v', default: false },
+      },
+      allowPositionals: true,
+    });
+    const inputFile = importPos[0];
+    if (!inputFile) {
+      console.error('Error: No input file specified.\nUsage: ai-exodus import <export-file>');
+      process.exit(1);
+    }
+    await importExport(inputFile, {
+      format: importVals.format,
+      verbose: importVals.verbose,
+      from: importVals.from,
+      to: importVals.to,
+      minMessages: importVals['min-messages'],
+      modelFilter: importVals['only-models'] ? importVals['only-models'].split(',').map(s => s.trim()) : null,
+      portalUrl: importVals['portal-url'],
+      password: importVals.password,
+    });
+    process.exit(0);
+  }
+
+  // ── Analyze (portal mode) ──
+  if (command === 'analyze') {
+    const { values: analyzeVals } = parseArgs({
+      args: args.slice(1),
+      options: {
+        passes:         { type: 'string', default: 'all' },
+        model:          { type: 'string', default: 'sonnet' },
+        fast:           { type: 'boolean', default: false },
+        from:           { type: 'string' },
+        to:             { type: 'string' },
+        'only-models':  { type: 'string' },
+        name:           { type: 'string' },
+        user:           { type: 'string' },
+        nsfw:           { type: 'boolean', default: false },
+        'portal-url':   { type: 'string' },
+        password:       { type: 'string' },
+        output:         { type: 'string', short: 'o' },
+        verbose:        { type: 'boolean', short: 'v', default: false },
+      },
+      allowPositionals: true,
+    });
+
+    // Determine which passes to run
+    const passMap = { index: 1, persona: 2, personality: 2, memory: 3, skills: 4, relationship: 5 };
+    let selectedPasses;
+    if (analyzeVals.passes === 'all') {
+      selectedPasses = [1, 2, 3, 4, 5];
+    } else {
+      selectedPasses = [...new Set(
+        analyzeVals.passes.split(',').map(p => passMap[p.trim().toLowerCase()]).filter(Boolean)
+      )].sort();
+      // Index (pass 1) is always required as dependency
+      if (!selectedPasses.includes(1)) selectedPasses.unshift(1);
+    }
+
+    const config = await loadConfig();
+    const portalUrl = analyzeVals['portal-url'] || config.portalUrl;
+
+    // Check Claude CLI
+    const cli = await checkCLI();
+    if (!cli.ok) {
+      console.error('Error: Claude Code CLI not found. Install: npm install -g @anthropic-ai/claude-code');
+      process.exit(1);
+    }
+
+    console.log('');
+    console.log('  ╔══════════════════════════════════════╗');
+    console.log('  ║       AI EXODUS — Analyze Data       ║');
+    console.log('  ╚══════════════════════════════════════╝');
+    console.log('');
+    console.log('  Passes:  ' + selectedPasses.map(p => ['Index','Personality','Memory','Skills','Relationship'][p-1]).join(', '));
+    console.log('  Model:   ' + analyzeVals.model);
+    if (analyzeVals.fast) console.log('  Fast:    yes (Haiku for indexing & skills)');
+    if (portalUrl) console.log('  Portal:  ' + portalUrl);
+    if (analyzeVals.from || analyzeVals.to) console.log('  Dates:   ' + (analyzeVals.from || 'start') + ' -> ' + (analyzeVals.to || 'end'));
+    console.log('');
+
+    // If portal is configured, fetch conversations from it
+    let parsed;
+    if (portalUrl) {
+      console.log('  Fetching conversations from portal...');
+      let cookie = '';
+      const password = analyzeVals.password || config.portalPassword;
+      if (password) {
+        const loginRes = await fetch(portalUrl + '/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password }),
+        });
+        if (loginRes.ok) {
+          const setCookie = loginRes.headers.get('set-cookie') || '';
+          cookie = setCookie.split(';')[0];
+        }
+      }
+
+      // Fetch all conversations
+      let allConvos = [];
+      let page = 1;
+      let hasMore = true;
+      while (hasMore) {
+        let qs = `conversations?page=${page}&limit=100`;
+        if (analyzeVals.from) qs += '&from=' + analyzeVals.from;
+        if (analyzeVals.to) qs += '&to=' + analyzeVals.to;
+        // Note: portal API only filters by single model — fetch broadly, filter locally
+        // if (analyzeVals['only-models']) qs += '&model=' + ...;
+
+        const res = await fetch(portalUrl + '/api/' + qs, {
+          headers: cookie ? { Cookie: cookie } : {},
+        });
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          console.error('  Error fetching conversations: HTTP ' + res.status);
+          if (res.status === 401) console.error('  Check your password (--password flag or ~/.exodus/config.json)');
+          console.error('  ' + errText.slice(0, 200));
+          process.exit(1);
+        }
+        const data = await res.json();
+        if (!data.conversations?.length) { hasMore = false; break; }
+        allConvos.push(...data.conversations);
+        hasMore = page < data.pages;
+        page++;
+      }
+
+      console.log('  Found ' + allConvos.length + ' conversations');
+
+      // Fetch messages for each conversation
+      console.log('  Fetching message content...');
+      const conversations = [];
+      for (let i = 0; i < allConvos.length; i++) {
+        const convo = allConvos[i];
+        process.stdout.write(`\r    ${i + 1}/${allConvos.length}...`);
+        // Paginate through all messages
+        let allMessages = [];
+        let msgPage = 1;
+        let msgHasMore = true;
+        while (msgHasMore) {
+          const msgRes = await fetch(portalUrl + '/api/conversations/' + convo.id + '/messages?limit=500&page=' + msgPage, {
+            headers: cookie ? { Cookie: cookie } : {},
+          });
+          const msgData = await msgRes.json();
+          if (!msgData.messages?.length) { msgHasMore = false; break; }
+          allMessages.push(...msgData.messages);
+          msgHasMore = allMessages.length < msgData.total;
+          msgPage++;
+        }
+        const msgData = { messages: allMessages };
+        conversations.push({
+          id: convo.id,
+          title: convo.title,
+          createdAt: convo.created_at ? new Date(convo.created_at) : null,
+          updatedAt: convo.updated_at ? new Date(convo.updated_at) : null,
+          model: convo.model,
+          messageCount: msgData.messages?.length || 0,
+          messages: (msgData.messages || []).map(m => ({
+            role: m.role,
+            content: m.content,
+            model: m.model,
+            timestamp: m.created_at ? new Date(m.created_at) : null,
+          })),
+        });
+      }
+      console.log('');
+
+      // Local model filter (portal API only supports single model filter)
+      let filtered = conversations;
+      if (analyzeVals['only-models']) {
+        const modelFilters = analyzeVals['only-models'].split(',').map(m => m.trim().toLowerCase());
+        filtered = conversations.filter(c => {
+          const convoModels = c.messages.map(m => (m.model || '').toLowerCase()).filter(Boolean);
+          return convoModels.some(cm => modelFilters.some(f => cm.includes(f)));
+        });
+        console.log('  Model filter: ' + filtered.length + '/' + conversations.length + ' conversations match');
+      }
+
+      const totalMsgs = filtered.reduce((sum, c) => sum + c.messageCount, 0);
+      const dates = filtered.map(c => c.createdAt).filter(Boolean).sort();
+      parsed = {
+        source: 'portal',
+        conversations: filtered,
+        messageCount: totalMsgs,
+        dateRange: { from: dates[0] || 'unknown', to: dates[dates.length - 1] || 'unknown' },
+      };
+    } else {
+      console.error('  Error: No portal URL. Run `ai-exodus deploy` first, or use --portal-url <url>');
+      process.exit(1);
+    }
+
+    console.log('  Starting analysis...');
+    console.log('');
+
+    const outputDir = resolve(analyzeVals.output || './exodus-output');
+    const analysis = await analyze(parsed, {
+      outputDir,
+      model: analyzeVals.model,
+      fast: analyzeVals.fast,
+      aiName: analyzeVals.name,
+      userName: analyzeVals.user,
+      includeNsfw: analyzeVals.nsfw,
+      verbose: analyzeVals.verbose,
+      selectedPasses,
+    });
+
+    // Push results to portal
+    if (portalUrl) {
+      console.log('');
+      console.log('  Pushing results to portal...');
+      let cookie = '';
+      const password = analyzeVals.password || config.portalPassword;
+      if (password) {
+        const loginRes = await fetch(portalUrl + '/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password }),
+        });
+        if (loginRes.ok) {
+          const setCookie = loginRes.headers.get('set-cookie') || '';
+          cookie = setCookie.split(';')[0];
+        }
+      }
+
+      // Push analysis results in chunks to avoid Worker timeout
+      const allMemories = flattenMemories(analysis.memory);
+      const allSkills = analysis.skills?.skills || [];
+      const CHUNK = 500; // memories per request
+
+      // 1. Skills + persona + narrative (small, one request)
+      console.log('  Pushing skills, persona, narrative...');
+      const metaRes = await fetch(portalUrl + '/api/import/analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+        body: JSON.stringify({
+          skills: allSkills,
+          memories: [],
+          persona: analysis.persona || '',
+          narrative: analysis.relationship || '',
+          stats: analysis.stats,
+        }),
+      });
+      if (!metaRes.ok) {
+        const errData = await metaRes.json().catch(() => ({}));
+        console.error('  Warning: Failed to push skills/persona: ' + (errData.error || `HTTP ${metaRes.status}`));
+      } else {
+        console.log('    ' + allSkills.length + ' skills, persona, narrative pushed.');
+      }
+
+      // 2. Memories in chunks
+      if (allMemories.length > 0) {
+        console.log('  Pushing ' + allMemories.length + ' memories...');
+        for (let i = 0; i < allMemories.length; i += CHUNK) {
+          const chunk = allMemories.slice(i, i + CHUNK);
+          const memRes = await fetch(portalUrl + '/api/import/analysis', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+            body: JSON.stringify({ skills: [], memories: chunk }),
+          });
+          if (!memRes.ok) {
+            console.error('    Warning: Memory chunk ' + (i / CHUNK + 1) + ' failed');
+          } else {
+            process.stdout.write('\r    ' + Math.min(i + CHUNK, allMemories.length) + '/' + allMemories.length + ' memories pushed');
+          }
+        }
+        console.log('');
+      }
+      console.log('  Results pushed to portal.');
+    }
+
+    // Also write local files if --output was specified
+    if (analyzeVals.output) {
+      console.log('  Writing local files to ' + outputDir + '...');
+      await generate(analysis, {
+        outputDir,
+        hearthline: false,
+        letta: false,
+        aiName: analyzeVals.name || analysis.personality?.name || 'AI',
+        userName: analyzeVals.user || analysis.memory?.userName || 'User',
+      });
+    }
+
+    console.log('');
+    console.log('  Analysis complete!');
+    if (portalUrl) console.log('  View results at: ' + portalUrl);
+    console.log('');
+    process.exit(0);
+  }
+
+  // ── Config ──
+  if (command === 'config') {
+    const config = await loadConfig();
+    console.log('');
+    console.log('  AI Exodus Configuration');
+    console.log('  ─────────────────────────');
+    if (config.portalUrl) console.log('  Portal URL:  ' + config.portalUrl);
+    if (config.deployName) console.log('  Deploy name: ' + config.deployName);
+    if (config.dbName) console.log('  Database:    ' + config.dbName);
+    if (config.mcpSecret) console.log('  MCP Secret:  ' + config.mcpSecret);
+    if (!config.portalUrl) console.log('  No deployment found. Run: ai-exodus deploy');
+    console.log('');
     process.exit(0);
   }
 
@@ -243,6 +603,53 @@ async function main() {
     if (values.verbose && err.stack) console.error(err.stack);
     process.exit(1);
   }
+}
+
+/**
+ * Flatten nested memory object into array of {category, key, value} for portal import
+ */
+function flattenMemories(memory) {
+  if (!memory) return [];
+  const entries = [];
+
+  function extract(obj, category) {
+    if (!obj) return;
+    for (const [key, val] of Object.entries(obj)) {
+      if (!val || val === 'if known' || val === 'if mentioned') continue;
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          if (item && typeof item === 'string') {
+            entries.push({ category, key, value: item });
+          } else if (item && typeof item === 'object') {
+            // Timeline events etc
+            entries.push({ category, key, value: JSON.stringify(item) });
+          }
+        }
+      } else if (typeof val === 'string' && val.length > 0) {
+        entries.push({ category, key, value: val });
+      } else if (typeof val === 'object') {
+        extract(val, category);
+      }
+    }
+  }
+
+  if (memory.identity) extract(memory.identity, 'identity');
+  if (memory.life) extract(memory.life, 'life');
+  if (memory.preferences) extract(memory.preferences, 'preferences');
+  if (memory.personality) extract(memory.personality, 'personality');
+  if (memory.relationship) extract(memory.relationship, 'relationship');
+  if (memory.timeline) {
+    for (const evt of memory.timeline) {
+      entries.push({ category: 'timeline', key: evt.date || '', value: evt.event || JSON.stringify(evt) });
+    }
+  }
+  if (memory.rawFacts) {
+    for (const fact of memory.rawFacts) {
+      entries.push({ category: 'facts', key: null, value: fact });
+    }
+  }
+
+  return entries;
 }
 
 main();

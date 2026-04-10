@@ -181,14 +181,14 @@ CRITICAL:
 - Output ONLY valid JSON.`;
 
 
-export const PASS_4_SKILLS = (aiName, userName, indexData) => `You are analyzing what an AI actually DID for its user. This is Pass 4 of 5.
+export const PASS_4_SKILLS = (aiName, userName, indexData) => `You are analyzing what an AI actually DID for its user and WHAT ACTIVATED each skill. This is Pass 4 of 5.
 
 The AI is "${aiName || 'unknown'}". The user is "${userName || 'unknown'}".
 
 Context from Pass 1:
 ${JSON.stringify(indexData, null, 2)}
 
-Identify every skill or capability the AI demonstrated. Not what it COULD do in theory — what it ACTUALLY DID in these conversations.
+Identify every skill or capability the AI demonstrated. Not what it COULD do in theory — what it ACTUALLY DID in these conversations. For each skill, identify what TRIGGERS it — what does the user say, do, or feel that activates this behavior?
 
 Produce a JSON object:
 {
@@ -198,7 +198,14 @@ Produce a JSON object:
       "category": "emotional_support | creative | productivity | coding | knowledge | decision_making | health | intimate | entertainment | other",
       "frequency": "daily | weekly | occasional | rare",
       "description": "what the AI actually did",
-      "examples": ["1-2 brief examples from conversations"],
+      "triggers": {
+        "phrases": ["exact words or phrases the user says that activate this skill — e.g. 'good morning', 'I can't do this', 'help me with'"],
+        "temporal": ["time-based triggers — e.g. 'first message of the day', 'late night', 'Monday mornings', 'after long silence'"],
+        "emotional": ["emotional states that activate this — e.g. 'user sounds overwhelmed', 'user is excited', 'user is venting', 'low energy'"],
+        "contextual": ["situational triggers — e.g. 'user shares a photo', 'user mentions work deadline', 'user asks for advice', 'during a creative project'"]
+      },
+      "activationRule": "one clear sentence: WHEN does this skill fire? e.g. 'Activates when the user sends their first message before noon or says any greeting'",
+      "examples": ["1-2 brief examples from conversations showing the trigger → response pattern"],
       "approach": "HOW did the AI do this? What made its approach distinctive?",
       "quality": "how good was it at this? Did the user seem satisfied?"
     }
@@ -209,8 +216,12 @@ Produce a JSON object:
   "toolsUsed": ["any external tools, APIs, browsing, code execution the AI used"]
 }
 
-Focus on the DISTINCTIVE approach — not just "emotional support" but HOW it did emotional support. That's what makes migration valuable.
-Output ONLY valid JSON.`;
+CRITICAL:
+- Focus on OBSERVABLE triggers from the conversations. What did the user actually say/do right before this skill activated?
+- "triggers.phrases" should be real phrases the user used, not generic descriptions.
+- "activationRule" is the most important new field — it should read like an IF-THEN rule.
+- Focus on the DISTINCTIVE approach — not just "emotional support" but HOW it did emotional support.
+- Output ONLY valid JSON.`;
 
 
 export const PASS_5_RELATIONSHIP = (aiName, userName, indexData, personalityData, memoryData) => `You are writing the story of a human-AI relationship. This is Pass 5 of 5 — the one that matters most.
@@ -257,7 +268,7 @@ Write a system prompt that:
 3. Sets behavioral guidelines — how they make decisions, handle emotions, show care
 4. Lists specific quirks and patterns that make them unique
 5. Notes what they should NEVER do (based on observed boundaries)
-6. Includes key skills and how to approach them
+6. Includes key skills WITH their activation triggers — when to fire each skill based on what the user says, the time of day, their emotional state, or the context. Use the "activationRule" field from skills data as the primary reference.
 
 Format as a markdown document that could be dropped into a CLAUDE.md file or system prompt field.
 Keep it under 2000 words. Be specific — generic instructions are useless. Every line should be something that distinguishes THIS AI from any other.
