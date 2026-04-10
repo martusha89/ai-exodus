@@ -31,6 +31,19 @@ export async function deploy(options) {
     process.exit(1);
   }
 
+  // Check wrangler is authenticated
+  const whoamiOk = await checkCommand('npx', ['wrangler', 'whoami']);
+  if (!whoamiOk) {
+    console.error('  Error: Not logged into Cloudflare.');
+    console.error('');
+    console.error('  Run this first:');
+    console.error('    npx wrangler login');
+    console.error('');
+    console.error('  This opens your browser to log in (or create a free account).');
+    console.error('  Then run ai-exodus deploy again.');
+    process.exit(1);
+  }
+
   // Check if portal source exists
   if (!existsSync(join(PORTAL_DIR, 'worker.js'))) {
     console.error('  Error: Portal source not found at ' + PORTAL_DIR);
@@ -98,27 +111,18 @@ MCP_SECRET = "${mcpSecret}"
   // Step 3: Initialize database schema
   console.log('  [3/4] Initializing database schema...');
   try {
-    const schemaContent = await readFile(join(PORTAL_DIR, 'schema.sql'), 'utf-8');
-    // Split by semicolons and run each statement (wrangler --file can be finicky)
-    const statements = schemaContent.split(';').map(s => s.trim()).filter(s => s.length > 5);
-    for (const stmt of statements) {
-      try {
-        await runCommand('npx', ['wrangler', 'd1', 'execute', dbName, '--remote', '--command', stmt + ';'], { verbose, cwd: deployDir });
-      } catch (err) {
-        const msg = err.message || '';
-        // Tolerate "already exists" and argument parsing issues with CREATE INDEX
-        if (msg.includes('already exists') || msg.includes('Unknown arguments') || msg.includes('must provide')) {
-          if (verbose) console.log('      (skipped: ' + msg.slice(0, 80) + ')');
-        } else {
-          console.error('    Schema error: ' + msg.slice(0, 200));
-          console.error('    Deploy may fail — check your database manually.');
-        }
-      }
-    }
+    await runCommand('npx', ['wrangler', 'd1', 'execute', dbName, '--remote', '--file', 'schema.sql'], { verbose, cwd: deployDir });
     console.log('    Schema applied.');
   } catch (err) {
-    console.error('    Schema initialization failed: ' + err.message);
-    console.error('    Try applying manually: npx wrangler d1 execute ' + dbName + ' --remote --file schema.sql');
+    const msg = err.message || '';
+    if (msg.includes('already exists')) {
+      console.log('    Schema already exists (this is fine).');
+    } else {
+      console.error('    Schema initialization failed.');
+      console.error('    Try applying manually:');
+      console.error('    npx wrangler d1 execute ' + dbName + ' --remote --file ' + join(deployDir, 'schema.sql'));
+      console.error('    Error: ' + msg.slice(0, 200));
+    }
   }
 
   // Step 4: Deploy worker
