@@ -133,6 +133,14 @@ MCP_SECRET = "${mcpSecret}"
   const urlMatch = deployOutput.match(/(https:\/\/[^\s]+\.workers\.dev)/);
   const portalUrl = urlMatch ? urlMatch[1] : `https://${deployName}.workers.dev`;
 
+  // Save MCP secret to portal settings (so the guide tab can show it)
+  try {
+    // Need to set up password first if this is fresh deploy, so just store via D1 directly
+    await runCommand('npx', ['wrangler', 'd1', 'execute', dbName, '--remote', '--command',
+      `INSERT OR REPLACE INTO settings (key, value) VALUES ('mcp_secret', '${mcpSecret}');`],
+      { verbose, cwd: deployDir });
+  } catch { /* non-critical */ }
+
   // Save config
   config.deployName = deployName;
   config.mcpSecret = mcpSecret;
