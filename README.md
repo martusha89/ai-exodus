@@ -138,6 +138,14 @@ npx ai-exodus analyze --passes all --fast
 
 Personality, memory, and relationship always run on Sonnet — they need the depth. Saves ~30% of tokens.
 
+### Cheapest/Fastest (All Haiku)
+
+```bash
+npx ai-exodus analyze --passes all --model haiku
+```
+
+Runs **every** pass on Haiku. Significantly faster and cheaper, but lower quality — personality will be more generic, memories may miss subtle details, and the relationship narrative won't have the same depth. Good for a quick first look or a rough draft before running specific passes on Sonnet later.
+
 ### Running in Chunks
 
 You can analyze different date ranges on different days. Results merge intelligently:

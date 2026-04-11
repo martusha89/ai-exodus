@@ -1296,6 +1296,16 @@ function guideTab() {
   </div>
 
   <div class="guide-section">
+    <h2>I want the cheapest/fastest analysis possible</h2>
+    <div class="guide-command">
+      <code>npx ai-exodus analyze --passes all --model haiku</code>
+      <button class="btn btn-secondary btn-sm" onclick="copyCommand(this)">Copy</button>
+    </div>
+    <p>This runs <strong>every</strong> pass on Haiku — the fastest and cheapest Claude model. It's significantly faster and uses far fewer tokens, but the quality will be lower. Personality extraction will be more generic, memories may miss subtle details, and the relationship narrative won't have the same emotional depth.</p>
+    <p class="guide-note">Good for: a quick first look, testing the tool, or when you have a huge archive and want a rough draft before running specific passes on Sonnet later.</p>
+  </div>
+
+  <div class="guide-section">
     <h2>I want to download my results</h2>
     <p>After analysis, go to the <strong>Skills</strong>, <strong>Memories</strong>, or <strong>Persona</strong> tabs and hit the <strong>Download</strong> button. Files come as <code>.md</code> ready to drop into Claude Code, Claude Desktop, or any MCP-compatible tool.</p>
   </div>
