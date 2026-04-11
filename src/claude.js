@@ -16,26 +16,49 @@ import { randomBytes } from 'node:crypto';
  * Find the claude CLI path
  */
 async function findClaude() {
-  const home = process.env.USERPROFILE || process.env.HOME || '';
-  const knownPaths = [
-    join(home, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'claude.exe'),
-    join(home, '.npm-global', 'bin', 'claude'),
-    join(home, '.npm-global', 'bin', 'claude.cmd'),
-    '/usr/local/bin/claude',
-  ];
+  const { execSync } = await import('node:child_process');
 
-  for (const p of knownPaths) {
-    if (existsSync(p)) return p;
+  // First: just try running "claude" — let the shell resolve it
+  // This works regardless of how/where it was installed
+  try {
+    execSync('claude --version', { stdio: 'pipe', shell: true, timeout: 10000 });
+    return 'claude';
+  } catch {}
+
+  // Windows: try common install locations
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  if (process.platform === 'win32') {
+    const winPaths = [
+      join(home, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'claude.exe'),
+      join(home, '.npm-global', 'bin', 'claude.cmd'),
+      join(home, '.npm-global', 'claude.cmd'),
+      join(home, 'AppData', 'Roaming', 'npm', 'claude.cmd'),
+    ];
+    for (const p of winPaths) {
+      if (existsSync(p)) return p;
+    }
+
+    // Try where command (finds .cmd, .exe, .ps1)
+    try {
+      const result = execSync('where claude', { stdio: 'pipe', shell: true, timeout: 5000 });
+      const found = result.toString().trim().split('\n')[0].trim();
+      if (found) return found;
+    } catch {}
+  } else {
+    // Unix
+    const unixPaths = ['/usr/local/bin/claude', join(home, '.npm-global', 'bin', 'claude')];
+    for (const p of unixPaths) {
+      if (existsSync(p)) return p;
+    }
+    try {
+      const result = execSync('which claude', { stdio: 'pipe', timeout: 5000 });
+      const found = result.toString().trim();
+      if (found) return found;
+    } catch {}
   }
 
-  // Fallback
-  const { exec } = await import('node:child_process');
-  return new Promise((resolve) => {
-    const cmd = process.platform === 'win32' ? 'where claude.exe' : 'which claude';
-    exec(cmd, (err, stdout) => {
-      resolve(!err && stdout.trim() ? stdout.trim().split('\n')[0].trim() : 'claude');
-    });
-  });
+  // Last resort — return 'claude' and let it fail with a clear error at call time
+  return 'claude';
 }
 
 let claudePath = null;
@@ -79,6 +102,7 @@ export async function callClaude({ system, prompt, model }) {
       const proc = spawn(claude, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
         cwd: tmpdir(), // avoid picking up CLAUDE.md from home/project dirs
+        shell: process.platform === 'win32', // Windows needs shell to resolve .cmd files
       });
 
       let stdout = '';
@@ -130,7 +154,7 @@ export async function checkCLI() {
   try {
     const claude = await getClaude();
     return await new Promise((resolve) => {
-      const proc = spawn(claude, ['--version'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      const proc = spawn(claude, ['--version'], { stdio: ['pipe', 'pipe', 'pipe'], shell: process.platform === 'win32' });
       let stdout = '';
       proc.stdout.on('data', (d) => { stdout += d.toString(); });
       proc.on('error', () => resolve({ ok: false, error: 'Claude Code CLI not found' }));
