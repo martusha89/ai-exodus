@@ -1285,12 +1285,12 @@ function guideTab() {
     </div>
     <p>The <code>--fast</code> flag uses Haiku (cheaper, faster model) for two of the five passes. Here's exactly what runs on what:</p>
     <table class="guide-table">
-      <tr><th>Pass</th><th>What it does</th><th>Default</th><th>With --fast</th></tr>
-      <tr><td>1. Index</td><td>Maps your conversations — topics, patterns, structure</td><td>Sonnet</td><td>Haiku</td></tr>
-      <tr><td>2. Personality</td><td>Extracts your AI's voice, behavior, quirks</td><td>Sonnet</td><td>Sonnet</td></tr>
-      <tr><td>3. Memory</td><td>Extracts everything about you — facts, preferences, history</td><td>Sonnet</td><td>Sonnet</td></tr>
-      <tr><td>4. Skills</td><td>Detects what your AI did and what triggers each skill</td><td>Sonnet</td><td>Haiku</td></tr>
-      <tr><td>5. Relationship</td><td>Writes the story of your relationship</td><td>Sonnet</td><td>Sonnet</td></tr>
+      <tr><th>Pass</th><th>What it does</th><th>Default (best)</th><th>--fast (balanced)</th><th>--model haiku (cheapest)</th></tr>
+      <tr><td>1. Index</td><td>Maps your conversations — topics, patterns, structure</td><td>Sonnet</td><td>Haiku</td><td>Haiku</td></tr>
+      <tr><td>2. Personality</td><td>Extracts your AI's voice, behavior, quirks</td><td>Sonnet</td><td>Sonnet</td><td>Haiku</td></tr>
+      <tr><td>3. Memory</td><td>Extracts everything about you — facts, preferences, history</td><td>Sonnet</td><td>Sonnet</td><td>Haiku</td></tr>
+      <tr><td>4. Skills</td><td>Detects what your AI did and what triggers each skill</td><td>Sonnet</td><td>Haiku</td><td>Haiku</td></tr>
+      <tr><td>5. Relationship</td><td>Writes the story of your relationship</td><td>Sonnet</td><td>Sonnet</td><td>Haiku</td></tr>
     </table>
     <p class="guide-note">Personality, memory, and relationship always run on Sonnet — they need the depth. Indexing and skills are structural work where Haiku does fine. Saves ~30% of tokens.</p>
   </div>

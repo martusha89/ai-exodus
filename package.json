@@ -1,6 +1,6 @@
 {
   "name": "ai-exodus",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "description": "Migrate your AI relationship from any platform to Claude. Your AI belongs to you.",
   "type": "module",
   "bin": {
