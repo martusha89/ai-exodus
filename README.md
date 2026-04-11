@@ -91,7 +91,9 @@ claude login
 npx ai-exodus analyze --passes all
 ```
 
-Takes 15-60 minutes depending on how many conversations you have. Go make a coffee.
+**This takes a long time.** We're talking hours, not minutes. A few months of conversations can take 24+ hours. A year of heavy use can take days. The checkpoint system saves progress after every chunk, so if it crashes or you close your laptop, just run the same command again and it picks up where it left off.
+
+Go live your life while it runs.
 
 ### Analyze Only What You Need
 

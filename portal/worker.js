@@ -1220,7 +1220,7 @@ function guideTab() {
       <code>npx ai-exodus analyze --passes all</code>
       <button class="btn btn-secondary btn-sm" onclick="copyCommand(this)">Copy</button>
     </div>
-    <p class="guide-note">This runs on your Claude subscription. No API key needed. Takes 15-60 minutes depending on how many conversations you have.</p>
+    <p class="guide-note">This runs on your Claude subscription. No API key needed. <strong>This takes hours, not minutes.</strong> A few months of conversations can take 24+ hours. A year of heavy use can take days. The checkpoint system saves progress — if it stops, run the same command again and it resumes where it left off.</p>
   </div>
 
   <div class="guide-section">
