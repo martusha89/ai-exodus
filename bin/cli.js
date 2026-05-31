@@ -7,12 +7,13 @@ import { readFile } from 'node:fs/promises';
 import { parse } from '../src/parser.js';
 import { analyze } from '../src/analyzer.js';
 import { generate } from '../src/generator.js';
-import { checkCLI } from '../src/claude.js';
+import { checkProvider, resetConfigCache } from '../src/ai.js';
 import { deploy } from '../src/deploy.js';
 import { importExport } from '../src/import.js';
-import { loadConfig } from '../src/config.js';
+import { loadConfig, setConfig } from '../src/config.js';
+import { Checkpoint } from '../src/checkpoint.js';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 
 const HELP = `
   ai-exodus v${VERSION}
@@ -42,8 +43,9 @@ const HELP = `
 
   Analyze options:
     --passes <list>         Which passes to run: index,persona,memory,skills,relationship,all (default: all)
-    --model <model>         Claude model (default: sonnet)
-    --fast                  Use Haiku for indexing & skills passes
+    --provider <name>       Analysis engine: claude (default) or gemini (free API)
+    --model <model>         Claude model (default: sonnet). Ignored for gemini.
+    --fast                  Use the cheaper/faster model for indexing & skills passes
     --from <date>           Only analyze conversations from this date
     --to <date>             Only analyze conversations up to this date
     --only-models <m,...>   Only analyze convos using these models
@@ -53,6 +55,7 @@ const HELP = `
     --portal-url <url>      Portal URL (default: from config)
     --password <pw>         Portal password
     --output, -o <dir>      Also write local files (default: portal only)
+    --retry-skipped         Force-retry ALL previously-skipped chunks (default: only context-too-big skips auto-retry on resume)
     --verbose, -v           Show detailed progress
 
   Migrate options (classic local mode):
@@ -67,21 +70,28 @@ const HELP = `
     --to <date>             Only conversations up to this date (YYYY-MM-DD)
     --min-messages <n>      Skip conversations shorter than n messages (default: 10)
     --only-models <m,...>   Only include convos using these GPT models
-    --fast                  Use Haiku for indexing & skills (saves ~30% tokens)
-    --model <model>         Claude model to use (default: sonnet)
+    --fast                  Use the cheaper/faster model for indexing & skills
+    --provider <name>       Analysis engine: claude (default) or gemini (free API)
+    --model <model>         Claude model to use (default: sonnet). Ignored for gemini.
     --verbose, -v           Show detailed progress
     --help, -h              Show this help
     --version               Show version
 
-  Requires:
-    Claude Code CLI installed and logged in (runs on your subscription, no API key needed)
-    Install: npm install -g @anthropic-ai/claude-code
+  Analysis engine (pick one):
+    claude  (default)  Claude Code CLI, runs on your subscription, no API key.
+                       Install: npm install -g @anthropic-ai/claude-code
+    gemini  (free)     Google Gemini free tier. No subscription needed.
+                       Get a free key: https://aistudio.google.com/apikey
+                       Then:  ai-exodus config set gemini-key <KEY>
+                       And run with:  --provider gemini
 
   Examples:
     ai-exodus deploy
     ai-exodus import conversations.json
+    ai-exodus config set gemini-key AIza...        # use the free engine
+    ai-exodus analyze --provider gemini --passes persona,memory
     ai-exodus analyze --passes persona,memory --model sonnet --from 2024-06
-    ai-exodus migrate export.json --name "Cass" --user "Marta" --hearthline
+    ai-exodus migrate export.json --provider gemini --name "Cass" --user "Marta"
     ai-exodus migrate export.json --from 2025-06-01 --to 2025-12-31
 `;
 
@@ -92,14 +102,20 @@ const FORMATS = `
               File: conversations.json inside the ZIP
               Richest data — full history, timestamps, model info
 
+  claude      Claude.ai data export (Settings > Privacy > Export Data)
+              File: conversations.json (chat_messages with human/assistant)
+
+  generic     ANY other chat-export JSON — Grok, Gemini, Character.AI, Replika,
+              or unknown tools. Sniffs role + content fields automatically.
+              Also reads JSONL (one JSON object per line).
+              Aliases: --format grok, --format gemini
+
   raw         Plain text conversation logs (TXT, MD)
               Copy-pasted transcripts, any platform
               Less metadata but still extracts personality + memory
 
-  Coming soon:
-    cai        Character.AI conversation exports
-    replika    Replika GDPR data export
-    tavern     SillyTavern JSONL / character cards
+  Format is auto-detected from the file. Override with --format <name> if a
+  generic export is mis-detected.
 `;
 
 async function main() {
@@ -173,6 +189,7 @@ async function main() {
       args: args.slice(1),
       options: {
         passes:         { type: 'string', default: 'all' },
+        provider:       { type: 'string' },
         model:          { type: 'string', default: 'sonnet' },
         fast:           { type: 'boolean', default: false },
         from:           { type: 'string' },
@@ -184,6 +201,7 @@ async function main() {
         'portal-url':   { type: 'string' },
         password:       { type: 'string' },
         output:         { type: 'string', short: 'o' },
+        'retry-skipped': { type: 'boolean', default: false },
         verbose:        { type: 'boolean', short: 'v', default: false },
       },
       allowPositionals: true,
@@ -205,10 +223,11 @@ async function main() {
     const config = await loadConfig();
     const portalUrl = analyzeVals['portal-url'] || config.portalUrl;
 
-    // Check Claude CLI
-    const cli = await checkCLI();
-    if (!cli.ok) {
-      console.error('Error: Claude Code CLI not found. Install: npm install -g @anthropic-ai/claude-code');
+    // Resolve provider (flag wins; router falls back to config/env/auto)
+    if (analyzeVals.provider) { process.env.EXODUS_PROVIDER = analyzeVals.provider; resetConfigCache(); }
+    const pre = await checkProvider();
+    if (!pre.ok) {
+      console.error('  Error: ' + pre.error);
       process.exit(1);
     }
 
@@ -218,6 +237,7 @@ async function main() {
     console.log('  ╚══════════════════════════════════════╝');
     console.log('');
     console.log('  Passes:  ' + selectedPasses.map(p => ['Index','Personality','Memory','Skills','Relationship'][p-1]).join(', '));
+    console.log('  Engine:  ' + (pre.provider === 'gemini' ? 'Gemini (free API)' : 'Claude CLI'));
     console.log('  Model:   ' + analyzeVals.model);
     if (analyzeVals.fast) console.log('  Fast:    yes (Haiku for indexing & skills)');
     if (portalUrl) console.log('  Portal:  ' + portalUrl);
@@ -347,12 +367,15 @@ async function main() {
       includeNsfw: analyzeVals.nsfw,
       verbose: analyzeVals.verbose,
       selectedPasses,
+      retrySkipped: analyzeVals['retry-skipped'],
+      clearCheckpoint: false, // keep checkpoint until the portal push is confirmed below
     });
 
     // Push results to portal
     if (portalUrl) {
       console.log('');
       console.log('  Pushing results to portal...');
+      let pushOk = true; // becomes false on any failed artifact; gates checkpoint clear
       let cookie = '';
       const password = analyzeVals.password || config.portalPassword;
       if (password) {
@@ -388,6 +411,7 @@ async function main() {
       if (!metaRes.ok) {
         const errData = await metaRes.json().catch(() => ({}));
         console.error('  Warning: Failed to push skills/persona: ' + (errData.error || `HTTP ${metaRes.status}`));
+        pushOk = false;
       } else {
         console.log('    ' + allSkills.length + ' skills, persona, narrative pushed.');
       }
@@ -404,13 +428,23 @@ async function main() {
           });
           if (!memRes.ok) {
             console.error('    Warning: Memory chunk ' + (i / CHUNK + 1) + ' failed');
+            pushOk = false;
           } else {
             process.stdout.write('\r    ' + Math.min(i + CHUNK, allMemories.length) + '/' + allMemories.length + ' memories pushed');
           }
         }
         console.log('');
       }
-      console.log('  Results pushed to portal.');
+
+      // Only now that the push is confirmed do we clear the checkpoint. If any
+      // artifact failed, the on-disk checkpoint stays so a re-run can recover.
+      if (pushOk) {
+        await new Checkpoint(outputDir).clear();
+        console.log('  Results pushed to portal.');
+      } else {
+        console.log('  Results pushed with errors — checkpoint KEPT at ' + outputDir);
+        console.log('  Re-run the same analyze command to retry the failed parts.');
+      }
     }
 
     // Also write local files if --output was specified
@@ -434,6 +468,33 @@ async function main() {
 
   // ── Config ──
   if (command === 'config') {
+    // `ai-exodus config set <key> <value>`
+    if (args[1] === 'set') {
+      const friendly = {
+        provider:           'provider',          // claude | gemini
+        'gemini-key':       'geminiApiKey',
+        'gemini-model':     'geminiModel',
+        'gemini-model-fast':'geminiModelFast',
+        'gemini-temp':      'geminiTemperature',
+        'gemini-max-tokens':'geminiMaxTokens',
+      };
+      const rawKey = args[2];
+      const value = args[3];
+      const realKey = friendly[rawKey];
+      if (!realKey || value === undefined) {
+        console.error('  Usage: ai-exodus config set <key> <value>');
+        console.error('  Keys: ' + Object.keys(friendly).join(', '));
+        process.exit(1);
+      }
+      let stored = value;
+      if (realKey === 'geminiTemperature') stored = parseFloat(value);
+      if (realKey === 'geminiMaxTokens') stored = parseInt(value, 10);
+      await setConfig(realKey, stored);
+      const shown = rawKey === 'gemini-key' ? value.slice(0, 6) + '…(saved)' : stored;
+      console.log(`  Saved: ${rawKey} = ${shown}`);
+      process.exit(0);
+    }
+
     const config = await loadConfig();
     console.log('');
     console.log('  AI Exodus Configuration');
@@ -442,6 +503,15 @@ async function main() {
     if (config.deployName) console.log('  Deploy name: ' + config.deployName);
     if (config.dbName) console.log('  Database:    ' + config.dbName);
     if (config.mcpSecret) console.log('  MCP Secret:  ' + config.mcpSecret);
+    console.log('  ─── Analysis engine ───');
+    const envProvider = process.env.EXODUS_PROVIDER;
+    const autoGemini = !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || config.geminiApiKey);
+    const activeProvider = (envProvider || config.provider || (autoGemini ? 'gemini' : 'claude')).toLowerCase();
+    console.log('  Provider:    ' + activeProvider + (config.provider ? '' : ' (auto)'));
+    if (activeProvider === 'gemini') {
+      console.log('  Gemini key:  ' + (config.geminiApiKey ? 'set (config)' : (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) ? 'set (env)' : 'NOT SET'));
+      console.log('  Gemini model:' + (config.geminiModel || 'gemini-2.0-flash') + ' / ' + (config.geminiModelFast || 'gemini-2.0-flash-lite'));
+    }
     if (!config.portalUrl) console.log('  No deployment found. Run: ai-exodus deploy');
     console.log('');
     process.exit(0);
@@ -468,6 +538,7 @@ async function main() {
       'min-messages': { type: 'string', default: '10' },
       'only-models':  { type: 'string' },
       fast:           { type: 'boolean', default: false },
+      provider:       { type: 'string' },
       model:          { type: 'string', default: 'sonnet' },
       verbose:        { type: 'boolean', short: 'v', default: false },
     },
@@ -490,12 +561,11 @@ async function main() {
     process.exit(1);
   }
 
-  // Check Claude CLI is available
-  const cli = await checkCLI();
-  if (!cli.ok) {
-    console.error('Error: Claude Code CLI not found or not responding.');
-    console.error('Install it:  npm install -g @anthropic-ai/claude-code');
-    console.error('Then log in: claude login');
+  // Resolve provider and preflight (Claude CLI or Gemini key)
+  if (values.provider) { process.env.EXODUS_PROVIDER = values.provider; resetConfigCache(); }
+  const pre = await checkProvider();
+  if (!pre.ok) {
+    console.error('  Error: ' + pre.error);
     process.exit(1);
   }
 
@@ -511,6 +581,7 @@ async function main() {
   console.log(`  Input:    ${basename(inputPath)} (${fileMB} MB)`);
   console.log(`  Format:   ${values.format || 'auto-detect'}`);
   console.log(`  Output:   ${resolve(values.output)}`);
+  console.log(`  Engine:   ${pre.provider === 'gemini' ? 'Gemini (free API)' : 'Claude CLI'}`);
   if (values.name) console.log(`  AI Name:  ${values.name}`);
   if (values.user) console.log(`  User:     ${values.user}`);
   console.log(`  Model:    ${values.model}`);
@@ -559,6 +630,7 @@ async function main() {
       userName: values.user,
       includeNsfw: values.nsfw,
       verbose: values.verbose,
+      clearCheckpoint: false, // keep checkpoint until output files are written below
     });
 
     // Step 3: Generate output
@@ -571,6 +643,9 @@ async function main() {
       aiName: values.name || analysis.personality.name || 'AI',
       userName: values.user || analysis.memory.userName || 'User',
     });
+
+    // Output written successfully — safe to clear the checkpoint now.
+    await new Checkpoint(resolve(values.output)).clear();
 
     console.log('');
     console.log('  ╔══════════════════════════════════════╗');

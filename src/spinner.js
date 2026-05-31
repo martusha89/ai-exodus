@@ -52,4 +52,12 @@ export class Spinner {
     }
     process.stdout.write(`\r          ✗ ${text}\n`);
   }
+
+  warn(text) {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    process.stdout.write(`\r          ⚠ ${text}\n`);
+  }
 }

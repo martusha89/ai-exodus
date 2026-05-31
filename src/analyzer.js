@@ -4,7 +4,7 @@
  * Checkpoints after every chunk — resume on crash
  */
 
-import { callClaude } from './claude.js';
+import { callAI } from './ai.js';
 import { chunkConversations, formatChunk } from './parser.js';
 import { Spinner } from './spinner.js';
 import { Checkpoint } from './checkpoint.js';
@@ -33,7 +33,7 @@ const PASS_NAMES = [
  * Run the 5-pass analysis pipeline
  */
 export async function analyze(parsed, options) {
-  const { model, aiName, userName, includeNsfw, verbose, outputDir, fast, selectedPasses } = options;
+  const { model, aiName, userName, includeNsfw, verbose, outputDir, fast, selectedPasses, retrySkipped, clearCheckpoint = true } = options;
   const runPass1 = !selectedPasses || selectedPasses.includes(1);
   const runPass2 = !selectedPasses || selectedPasses.includes(2);
   const runPass3 = !selectedPasses || selectedPasses.includes(3);
@@ -52,6 +52,17 @@ export async function analyze(parsed, options) {
   if (existing) {
     const completedPasses = Object.keys(existing.passes || {}).filter(k => existing.passes[k].complete);
     console.log(`    Resuming from checkpoint (${completedPasses.length} passes complete, saved ${existing.savedAt})`);
+
+    // If user passed --retry-skipped, clear ALL skip records (any reason).
+    // Otherwise, auto-clear only context-too-big skips — those are retryable
+    // once the user has enabled 1M context extra usage at claude.ai/settings/usage.
+    // AUP skips stay (content filter, no point retrying).
+    const reasonsToClear = retrySkipped ? null : ['context-too-big'];
+    const cleared = await checkpoint.clearSkippedChunks(reasonsToClear);
+    if (cleared > 0) {
+      const label = retrySkipped ? 'all skipped chunks' : 'context-too-big skips';
+      console.log(`    Clearing ${cleared} ${label} for retry`);
+    }
   }
 
   const spinner = new Spinner();
@@ -108,83 +119,119 @@ export async function analyze(parsed, options) {
 
     const remaining = targetIndices.filter(i => !completedChunks.includes(i));
     if (completedChunks.length > 0 && remaining.length > 0) {
-      console.log(`          Resuming — ${remaining.length} chunks remaining`);
+      const priorSkipped = checkpoint.getSkippedChunks(passNum);
+      const resumeNote = priorSkipped.length > 0
+        ? `${remaining.length} chunks remaining (${priorSkipped.length} previously skipped)`
+        : `${remaining.length} chunks remaining`;
+      console.log(`          Resuming — ${resumeNote}`);
     }
 
-    const MAX_CHUNK_KB = 400; // Split chunks larger than this
+    const MAX_CHUNK_KB = 400; // Split chunks larger than this preemptively
+    const MIN_SPLIT_MESSAGES = 4; // Below this, can't meaningfully split a convo further
+    const MAX_SPLIT_DEPTH = 5; // 1→2→4→8→16→32 sub-pieces max
+    const passSkipped = []; // skips recorded during this run
+
+    // Pass-specific merge function for sub-results
+    const mergeForPass = (resultsArr) => {
+      if (passNum === 3) return mergeMemory(resultsArr);
+      if (passNum === 4) return mergeSkills(resultsArr);
+      if (passNum === 2) return mergePersonality(resultsArr);
+      return mergeMemory(resultsArr); // fallback
+    };
+
+    // Split a convo array in half. If only 1 convo, split its messages.
+    // Returns [convoArrayA, convoArrayB] or null if can't split further.
+    const splitConvos = (convos) => {
+      if (convos.length > 1) {
+        const mid = Math.ceil(convos.length / 2);
+        return [convos.slice(0, mid), convos.slice(mid)];
+      }
+      const convo = convos[0];
+      if (!convo?.messages || convo.messages.length < MIN_SPLIT_MESSAGES) return null;
+      const mid = Math.ceil(convo.messages.length / 2);
+      const titleA = `${convo.title} (part 1)`;
+      const titleB = `${convo.title} (part 2)`;
+      return [
+        [{ ...convo, title: titleA, messages: convo.messages.slice(0, mid) }],
+        [{ ...convo, title: titleB, messages: convo.messages.slice(mid) }],
+      ];
+    };
+
+    // Recursively process a chunk: try as one call, split on context-too-big, merge results.
+    // Throws on AUP, unknown errors, or when split depth exhausted.
+    const processChunk = async (convos, depth, label) => {
+      const text = formatChunk(convos);
+      const kb = text.length / 1024;
+
+      // Preemptive split for oversized chunks at top level
+      if (depth === 0 && kb > MAX_CHUNK_KB) {
+        const halves = splitConvos(convos);
+        if (halves) {
+          spinner.update(`${label} (${kb.toFixed(0)}KB → preemptive split)`);
+          const a = await processChunk(halves[0], depth + 1, label);
+          const b = await processChunk(halves[1], depth + 1, label);
+          return mergeForPass([a, b]);
+        }
+      }
+
+      try {
+        const result = await callAI({
+          model: passModel,
+          system: systemPromptFn(),
+          prompt: text,
+        });
+        return safeParseJSON(result, `Pass ${passNum} d${depth}`);
+      } catch (err) {
+        // Only context-too-big is split-retryable. Other skip reasons + unknown errors bubble up.
+        if (err.skipReason !== 'context-too-big') throw err;
+        if (depth >= MAX_SPLIT_DEPTH) throw err;
+        const halves = splitConvos(convos);
+        if (!halves) throw err; // can't split further — give up
+        spinner.update(`${label} (${kb.toFixed(0)}KB too big, splitting at depth ${depth + 1})`);
+        const [a, b] = await Promise.all([
+          processChunk(halves[0], depth + 1, label),
+          processChunk(halves[1], depth + 1, label),
+        ]);
+        return mergeForPass([a, b]);
+      }
+    };
 
     let processed = totalToProcess - remaining.length;
     for (const i of remaining) {
       processed++;
       const chunkText = formatChunk(chunks[i]);
       const chunkKB = chunkText.length / 1024;
+      const label = `Chunk ${processed}/${totalToProcess}`;
 
       try {
-        let parsed;
-
-        if (chunkKB > MAX_CHUNK_KB) {
-          // Split oversized chunk into sub-chunks by conversation
-          const convos = chunks[i];
-
-          // If only 1 conversation, can't split — just process as-is
-          if (convos.length <= 1) {
-            spinner.start(`Chunk ${processed}/${totalToProcess} (${chunkKB.toFixed(0)}KB, single convo)`);
-            const result = await callClaude({
-              model: passModel,
-              system: systemPromptFn(),
-              prompt: chunkText,
-            });
-            parsed = safeParseJSON(result, `Pass ${passNum}`);
-          } else {
-          const mid = Math.ceil(convos.length / 2);
-          const subA = formatChunk(convos.slice(0, mid));
-          const subB = formatChunk(convos.slice(mid));
-
-          spinner.start(`Chunk ${processed}/${totalToProcess} (${chunkKB.toFixed(0)}KB → split into 2)`);
-
-          const resultA = await callClaude({
-            model: passModel,
-            system: systemPromptFn(),
-            prompt: subA,
-          });
-          spinner.update(`Chunk ${processed}/${totalToProcess} — sub-chunk 2/2`);
-
-          const resultB = await callClaude({
-            model: passModel,
-            system: systemPromptFn(),
-            prompt: subB,
-          });
-
-          // Merge sub-chunk results locally
-          const parsedA = safeParseJSON(resultA, `Pass ${passNum} sub-a`);
-          const parsedB = safeParseJSON(resultB, `Pass ${passNum} sub-b`);
-
-          // Use the type-aware local merge
-          if (passNum === 3) parsed = mergeMemory([parsedA, parsedB]);
-          else if (passNum === 4) parsed = mergeSkills([parsedA, parsedB]);
-          else if (passNum === 2) parsed = mergePersonality([parsedA, parsedB]);
-          else parsed = mergeMemory([parsedA, parsedB]); // fallback: generic merge
-          } // end else (splittable)
-        } else {
-          spinner.start(`Chunk ${processed}/${totalToProcess} (${chunkKB.toFixed(0)}KB)`);
-          const result = await callClaude({
-            model: passModel,
-            system: systemPromptFn(),
-            prompt: chunkText,
-          });
-          parsed = safeParseJSON(result, `Pass ${passNum}`);
-        }
+        spinner.start(`${label} (${chunkKB.toFixed(0)}KB)`);
+        const parsed = await processChunk(chunks[i], 0, label);
 
         results[i] = parsed;
-        spinner.stop(`Chunk ${processed}/${totalToProcess} done`);
+        spinner.stop(`${label} done`);
 
         // Checkpoint after every chunk
         await checkpoint.saveChunkResult(passNum, i, parsed, totalToProcess);
       } catch (err) {
-        spinner.fail(`Chunk ${processed} failed: ${err.message}`);
+        const reason = err.skipReason;
+        if (reason) {
+          spinner.warn(`${label} skipped (${reason})`);
+          console.warn(`          Reason: ${err.message.slice(0, 200)}`);
+          passSkipped.push({ index: i, reason, message: err.message });
+          await checkpoint.saveChunkSkipped(passNum, i, reason, err.message, totalToProcess);
+          continue;
+        }
+
+        spinner.fail(`${label} failed: ${err.message}`);
         console.error(`          Progress saved. Re-run the same command to resume.`);
         throw err;
       }
+    }
+
+    if (passSkipped.length > 0) {
+      const byReason = passSkipped.reduce((acc, s) => { acc[s.reason] = (acc[s.reason] || 0) + 1; return acc; }, {});
+      const summary = Object.entries(byReason).map(([r, n]) => `${n} ${r}`).join(', ');
+      console.log(`          Skipped ${passSkipped.length} chunk(s): ${summary}`);
     }
 
     // Filter out empty slots from sampling
@@ -216,6 +263,8 @@ export async function analyze(parsed, options) {
     });
     console.log(`          AI: ${indexData.aiName} | User: ${indexData.userName}`);
     console.log(`          Top topics: ${indexData.topTopics?.slice(0, 5).join(', ')}`);
+  } else {
+    indexData = checkpoint.getMergedData('index') || {};
   }
 
   // ═══════════════════════════════════════════
@@ -235,7 +284,9 @@ export async function analyze(parsed, options) {
     });
     console.log(`          Voice: ${personalityData?.voice?.formality || 'detected'}, humor: ${personalityData?.voice?.humor || 'detected'}`);
   } else {
-    console.log(`    [2/5] Personality extraction... (skipped)`);
+    personalityData = checkpoint.getMergedData('personality') || {};
+    const note = Object.keys(personalityData).length ? '(skipped — using cached)' : '(skipped)';
+    console.log(`    [2/5] Personality extraction... ${note}`);
   }
 
   // ═══════════════════════════════════════════
@@ -256,7 +307,10 @@ export async function analyze(parsed, options) {
     factCount = countFacts(memoryData);
     console.log(`          Extracted ~${factCount} facts about ${indexData.userName}`);
   } else {
-    console.log(`    [3/5] Memory extraction... (skipped)`);
+    memoryData = checkpoint.getMergedData('memory') || {};
+    factCount = countFacts(memoryData);
+    const note = factCount > 0 ? `(skipped — using ${factCount} cached facts)` : '(skipped)';
+    console.log(`    [3/5] Memory extraction... ${note}`);
   }
 
   // ═══════════════════════════════════════════
@@ -281,7 +335,7 @@ export async function analyze(parsed, options) {
     if (rawCount <= 30) return rawSkillsData; // already clean enough
 
     spinner.start(`Consolidating ${rawCount} raw skills into clean list...`);
-    const consolidated = await callClaude({
+    const consolidated = await callAI({
       model,
       system: `You are consolidating a list of ${rawCount} extracted skills into a clean, deduplicated list of 15-30 unique skills.
 
@@ -310,7 +364,9 @@ Rules:
   const skillCount = skillsData?.skills?.length || 0;
   console.log(`          ${rawSkillsData?.skills?.length || 0} raw → ${skillCount} consolidated skills`);
   } else {
-    console.log(`    [4/5] Skills detection... (skipped)`);
+    skillsData = checkpoint.getMergedData('skills') || {};
+    const note = skillsData?.skills?.length ? `(skipped — using ${skillsData.skills.length} cached)` : '(skipped)';
+    console.log(`    [4/5] Skills detection... ${note}`);
   }
 
   // ═══════════════════════════════════════════
@@ -334,7 +390,7 @@ Rules:
     const lightMemory = { userName: memoryData?.userName, identity: memoryData?.identity, relationship: { petNames: memoryData?.relationship?.petNames?.slice(0, 10), insideJokes: memoryData?.relationship?.insideJokes?.slice(0, 15), rituals: memoryData?.relationship?.rituals?.slice(0, 10), howItStarted: memoryData?.relationship?.howItStarted } };
 
     spinner.start('Writing your story...');
-    const result = await callClaude({
+    const result = await callAI({
       model,
       system: PASS_5_RELATIONSHIP(
         indexData.aiName, indexData.userName,
@@ -346,7 +402,9 @@ Rules:
     return result;
   });
   } else {
-    console.log(`    [5/5] Relationship narrative... (skipped)`);
+    relationshipNarrative = checkpoint.getMergedData('relationship') || '';
+    const note = relationshipNarrative ? '(skipped — using cached)' : '(skipped)';
+    console.log(`    [5/5] Relationship narrative... ${note}`);
   }
 
   // ═══════════════════════════════════════════
@@ -359,7 +417,7 @@ Rules:
   if (runPass2 || runPass4) {
   persona = await getOrMerge('persona', null, async () => {
     spinner.start('Generating persona definition...');
-    const result = await callClaude({
+    const result = await callAI({
       model,
       system: SYNTHESIS_PERSONA(indexData.aiName, personalityData, skillsData),
       prompt: 'Generate the system prompt / persona definition based on the analysis provided.',
@@ -367,12 +425,14 @@ Rules:
     spinner.stop('Persona generated');
     return result;
   });
+  } else {
+    persona = checkpoint.getMergedData('persona') || '';
   }
 
   if (runPass3) {
   preferences = await getOrMerge('preferences', null, async () => {
     spinner.start('Generating preferences...');
-    const result = await callClaude({
+    const result = await callAI({
       model,
       system: SYNTHESIS_PREFERENCES(indexData.userName, memoryData),
       prompt: 'Generate the user preferences document based on the memory analysis provided.',
@@ -380,12 +440,14 @@ Rules:
     spinner.stop('Preferences generated');
     return result;
   });
+  } else {
+    preferences = checkpoint.getMergedData('preferences') || '';
   }
 
   if (runPass2 && runPass3 && runPass4) {
   customInstructions = await getOrMerge('customInstructions', null, async () => {
     spinner.start('Generating custom instructions (short, for Claude.ai)...');
-    const result = await callClaude({
+    const result = await callAI({
       model,
       system: SYNTHESIS_CUSTOM_INSTRUCTIONS(indexData.aiName, personalityData, memoryData, skillsData),
       prompt: 'Generate the custom instructions block based on the analysis provided. Max 1500 characters.',
@@ -393,10 +455,15 @@ Rules:
     spinner.stop('Custom instructions generated');
     return result;
   });
+  } else {
+    customInstructions = checkpoint.getMergedData('customInstructions') || '';
   }
 
-  // Clear checkpoint — migration complete
-  await checkpoint.clear();
+  // Clear checkpoint only when the caller hasn't asked to manage it itself.
+  // The portal/local push happens AFTER this function returns, so deferring the
+  // clear to the caller means a failed push leaves a recoverable on-disk
+  // checkpoint instead of silently wiping completed work.
+  if (clearCheckpoint !== false) await checkpoint.clear();
 
   return {
     index: indexData,

@@ -47,11 +47,52 @@ export class Checkpoint {
   }
 
   /**
-   * Get completed chunk indices for a specific pass
+   * Get completed chunk indices for a specific pass.
+   * Includes both successfully-processed and deliberately-skipped chunks —
+   * resume should not retry either.
    */
   getCompletedChunks(passNum) {
     if (!this.data?.passes?.[passNum]) return [];
-    return this.data.passes[passNum].completedChunks || [];
+    const done = this.data.passes[passNum].completedChunks || [];
+    const skipped = (this.data.passes[passNum].skippedChunks || []).map(s => s.index);
+    return [...new Set([...done, ...skipped])];
+  }
+
+  /**
+   * Get skipped-chunk records for a pass: [{ index, reason, message }]
+   */
+  getSkippedChunks(passNum) {
+    if (!this.data?.passes?.[passNum]) return [];
+    return this.data.passes[passNum].skippedChunks || [];
+  }
+
+  /**
+   * Clear all skipped-chunk records — used when user wants to retry them
+   * (e.g. after enabling 1M context at claude.ai/settings/usage).
+   * Also un-marks the pass as complete if it was completed via skips.
+   * Optionally restrict to specific reasons; omit to clear all.
+   */
+  async clearSkippedChunks(reasons = null) {
+    if (!this.data?.passes) return 0;
+    let cleared = 0;
+    for (const pass of Object.values(this.data.passes)) {
+      if (!pass.skippedChunks) continue;
+      const before = pass.skippedChunks.length;
+      pass.skippedChunks = reasons
+        ? pass.skippedChunks.filter(s => !reasons.includes(s.reason))
+        : [];
+      cleared += before - pass.skippedChunks.length;
+      // If pass was complete only because of skips, un-mark it
+      if (pass.complete && cleared > 0) {
+        const doneCount = pass.completedChunks?.length || 0;
+        const skipCount = pass.skippedChunks.length;
+        // We don't know totalChunks here, but if there are now-cleared skips,
+        // the pass must be re-evaluated against current chunks.
+        pass.complete = false;
+      }
+    }
+    if (cleared > 0) await this.save(this.data);
+    return cleared;
   }
 
   /**
@@ -91,6 +132,29 @@ export class Checkpoint {
     pass.results[chunkIndex] = result;
 
     if (pass.completedChunks.length >= totalChunks) {
+      pass.complete = true;
+    }
+
+    await this.save(this.data);
+  }
+
+  /**
+   * Record a chunk skip — non-retryable error, move on.
+   * Counts toward pass completion so resume doesn't retry it.
+   */
+  async saveChunkSkipped(passNum, chunkIndex, reason, message, totalChunks) {
+    if (!this.data) this.data = { passes: {}, merged: {} };
+    if (!this.data.passes) this.data.passes = {};
+    if (!this.data.passes[passNum]) {
+      this.data.passes[passNum] = { completedChunks: [], results: [], skippedChunks: [], complete: false };
+    }
+
+    const pass = this.data.passes[passNum];
+    if (!pass.skippedChunks) pass.skippedChunks = [];
+    pass.skippedChunks.push({ index: chunkIndex, reason, message: (message || '').slice(0, 500) });
+
+    const done = (pass.completedChunks?.length || 0) + pass.skippedChunks.length;
+    if (done >= totalChunks) {
       pass.complete = true;
     }
 

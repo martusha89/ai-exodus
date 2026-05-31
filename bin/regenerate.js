@@ -9,7 +9,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { generate } from '../src/generator.js';
-import { callClaude } from '../src/claude.js';
+import { callAI } from '../src/ai.js';
 
 const outputDir = resolve('./exodus-output');
 
@@ -45,7 +45,7 @@ async function main() {
     const rawCount = analysis.skills.skills.length;
     console.log(`  Consolidating ${rawCount} skills via Claude (one call)...`);
 
-    const result = await callClaude({
+    const result = await callAI({
       model: 'sonnet',
       system: `You are consolidating a list of ${rawCount} extracted skills into a clean, deduplicated list of 15-30 unique skills.
 

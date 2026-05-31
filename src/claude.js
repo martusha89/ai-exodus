@@ -78,6 +78,27 @@ async function writeTempFile(content) {
 }
 
 /**
+ * Classify a Claude CLI error to decide whether the chunk is skippable.
+ * Returns a short reason code, or null if the error looks transient/unknown.
+ *   'aup'            — content tripped the usage policy filter (non-retryable)
+ *   'context-too-big'— chunk exceeds standard context, needs 1M tier or split
+ *   'overloaded'     — Anthropic-side overload, caller may want to retry
+ */
+function classifySkipReason(msg) {
+  const lower = (msg || '').toLowerCase();
+  if (lower.includes('violate our usage policy') || lower.includes('claude code is unable to respond')) {
+    return 'aup';
+  }
+  if (lower.includes('1m context') || lower.includes('extra usage is required')) {
+    return 'context-too-big';
+  }
+  if (lower.includes('overloaded') || lower.includes('rate limit')) {
+    return 'overloaded';
+  }
+  return null;
+}
+
+/**
  * Call Claude via CLI
  * System prompt → temp file (--system-prompt-file)
  * Prompt → stdin pipe
@@ -126,7 +147,9 @@ export async function callClaude({ system, prompt, model }) {
       proc.on('close', (code) => {
         if (code !== 0) {
           const errMsg = stderr.trim() || stdout.trim() || '(no output)';
-          reject(new Error(`Claude CLI exited with code ${code}: ${errMsg}`));
+          const err = new Error(`Claude CLI exited with code ${code}: ${errMsg}`);
+          err.skipReason = classifySkipReason(errMsg);
+          reject(err);
         } else {
           resolve(stdout.trim());
         }
